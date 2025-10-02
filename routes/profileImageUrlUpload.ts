@@ -7,8 +7,6 @@ import fs from 'node:fs'
 import { Readable } from 'node:stream'
 import { finished } from 'node:stream/promises'
 import { type Request, type Response, type NextFunction } from 'express'
-import dns from 'node:dns/promises'
-import net from 'node:net'
 
 import * as security from '../lib/insecurity'
 import { UserModel } from '../models/user'
@@ -29,51 +27,23 @@ export function profileImageUrlUpload () {
         'cdn.pixabay.com'
         // Add other legitimate image hosts as needed
       ]
-      async function isSafeImageUrl(imageUrl: string): Promise<boolean> {
-        function isPrivateIp(ip: string): boolean {
-          if (net.isIPv4(ip)) {
-            return (
-              ip.startsWith('10.') ||
-              ip.startsWith('127.') ||
-              ip.startsWith('169.254.') ||
-              ip.startsWith('192.168.') ||
-              /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip)
-            )
-          }
-          if (net.isIPv6(ip)) {
-            // Link-local, unique-local, loopback, etc
-            return (
-              ip === '::1' ||
-              ip.startsWith('fe80:') ||
-              ip.startsWith('fc00:') ||
-              ip.startsWith('fd00:')
-            )
-          }
-          return false
-        }
+      function isSafeImageUrl(imageUrl) {
         try {
           const parsedUrl = new URL(imageUrl)
           // Enforce http(s) protocol
           if (!['http:', 'https:'].includes(parsedUrl.protocol)) return false
+          // Host domain should be in the allow-list and not a localhost or private IP
           const hostname = parsedUrl.hostname
-          // Fast check for localhost, but don't rely on just string
+          // Check for localhost and local IPs
           if (
             hostname === 'localhost' ||
             hostname === '127.0.0.1' ||
-            hostname === '::1'
+            hostname === '::1' ||
+            /^10\./.test(hostname) ||
+            /^192\.168\./.test(hostname) ||
+            /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname) ||
+            /^169\.254\./.test(hostname)
           ) return false
-          // Check DNS resolution for IP addresses (can be CNAME to internal IP)
-          let addresses: string[] = []
-          try {
-            // Supports both IPv4 and IPv6
-            const result4 = await dns.resolve4(hostname).catch(() => [])
-            const result6 = await dns.resolve6(hostname).catch(() => [])
-            addresses = [...result4, ...result6]
-          } catch (err) {
-            return false // failed to resolve, treat as unsafe
-          }
-          if (addresses.length === 0) return false // No resolved addresses
-          if (addresses.some(ip => isPrivateIp(ip))) return false
           // Check if the host is in the allow-list (allow subdomains)
           if (ALLOWED_IMAGE_HOSTS.some(domain => hostname === domain || hostname.endsWith(`.${domain}`))) {
             return true
@@ -85,7 +55,7 @@ export function profileImageUrlUpload () {
       }
       if (loggedInUser) {
         try {
-          if (!(await isSafeImageUrl(url))) {
+          if (!isSafeImageUrl(url)) {
             res.status(400).send({ error: 'Invalid image URL. Only trusted image hosts are allowed.' })
             return
           }
