@@ -19,8 +19,46 @@ export function profileImageUrlUpload () {
       const url = req.body.imageUrl
       if (url.match(/(.)*solve\/challenges\/server-side(.)*/) !== null) req.app.locals.abused_ssrf_bug = true
       const loggedInUser = security.authenticatedUsers.get(req.cookies.token)
+      // SSRF protection: Only allow URLs from known safe domains
+      const ALLOWED_IMAGE_HOSTS = [
+        'imgur.com',
+        'i.imgur.com',
+        'images.unsplash.com',
+        'cdn.pixabay.com'
+        // Add other legitimate image hosts as needed
+      ]
+      function isSafeImageUrl(imageUrl) {
+        try {
+          const parsedUrl = new URL(imageUrl)
+          // Enforce http(s) protocol
+          if (!['http:', 'https:'].includes(parsedUrl.protocol)) return false
+          // Host domain should be in the allow-list and not a localhost or private IP
+          const hostname = parsedUrl.hostname
+          // Check for localhost and local IPs
+          if (
+            hostname === 'localhost' ||
+            hostname === '127.0.0.1' ||
+            hostname === '::1' ||
+            /^10\./.test(hostname) ||
+            /^192\.168\./.test(hostname) ||
+            /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname) ||
+            /^169\.254\./.test(hostname)
+          ) return false
+          // Check if the host is in the allow-list (allow subdomains)
+          if (ALLOWED_IMAGE_HOSTS.some(domain => hostname === domain || hostname.endsWith(`.${domain}`))) {
+            return true
+          }
+          return false
+        } catch (err) {
+          return false
+        }
+      }
       if (loggedInUser) {
         try {
+          if (!isSafeImageUrl(url)) {
+            res.status(400).send({ error: 'Invalid image URL. Only trusted image hosts are allowed.' })
+            return
+          }
           const response = await fetch(url)
           if (!response.ok || !response.body) {
             throw new Error('url returned a non-OK status code or an empty body')
